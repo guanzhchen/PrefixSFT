@@ -26,4 +26,5 @@ accelerate launch \
     --dataset_mixer_list allenai/tulu-3-sft-mixture 100 \
     --dataset_mix_dir output/sft_8b \
     --exp_name tulu-3-8b-sft \
-    --seed 123
+    --seed 123 \
+    --prefix_layer_list 30 31 32

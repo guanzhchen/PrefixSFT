@@ -1,0 +1,142 @@
+#!/bin/bash
+############ User Space ##############
+# Please fill in your Jupyter Lab token here, leave empty to use env value
+USER_JUPKEY=""
+# Please fill in your SSH public key here (something like ssh-rsa AAAxxxxx lepton@sampleDomain.com), leave empty to use env value
+USER_SSHPUB="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKs+WLSL5jL638+WLdPhHlGMKztjWF58kDEk5Du9Rrqz guanzhchen@r-165-106-25-172.comp.nus.edu.sg"
+# Please fill in your SSH root password here, leave empty to use env value
+USER_SSHKEY=""
+######################################
+
+JUPKEY=$LEPTON_POD_JUPKEY
+SSHPUB=$LEPTON_POD_SSHPUB
+SSHKEY=$LEPTON_POD_SSHKEY
+if [[ -n "$USER_JUPKEY" ]]; then
+  JUPKEY=$USER_JUPKEY
+fi
+if [[ -n "$USER_SSHPUB" ]]; then
+  SSHPUB=$USER_SSHPUB
+fi
+if [[ -n "$USER_SSHKEY" ]]; then
+  SSHKEY=$USER_SSHKEY
+fi
+
+
+export DEBIAN_FRONTEND=noninteractive
+export TZ=Etc/UTC
+
+function InstallSSH {
+  if service sshd status > /dev/null 2>&1; then
+    echo "OpenSSH server is already started."
+    return
+  fi
+  # Check if OpenSSH server is already installed
+  if ! command -v sshd &> /dev/null; then
+      echo "OpenSSH server is not installed. Installing..."
+
+      apt update
+      apt install -y openssh-server
+
+      echo "OpenSSH server installation complete."
+  else
+      echo "OpenSSH server is already installed."
+  fi
+
+  # Set root password if SSHKEY is provided
+  if [[ -n "$SSHKEY" ]]; then
+      # Enable password authentication in SSH configuration
+      sed -i '/^#PasswordAuthentication/c\PasswordAuthentication yes' /etc/ssh/sshd_config
+      sed -i '/^PasswordAuthentication/c\PasswordAuthentication yes' /etc/ssh/sshd_config
+      # Enable root login in SSH configuration
+      sed -i '/^#PermitRootLogin/c\PermitRootLogin yes' /etc/ssh/sshd_config
+      sed -i '/^PermitRootLogin/c\PermitRootLogin yes' /etc/ssh/sshd_config
+      echo "Root login is enabled."
+
+      # Display a message indicating that user/password SSH access is enabled
+      echo "User/password SSH access is enabled."
+      echo "root:${SSHKEY}" | chpasswd
+      echo "Root password has been set."
+  fi
+
+  # Check if LEPTON_PUBLIC_KEY variable is set and not empty
+  if [[ -n "$SSHPUB" ]]; then
+      # Create the .ssh directory and authorized_keys file if they don't exist
+      if [ ! -d "$HOME/.ssh" ]; then
+          mkdir -p "$HOME/.ssh"
+          chmod 0700 "$HOME/.ssh"
+          echo "Directory $HOME/.ssh created."
+      fi
+      if [ ! -f "$HOME/.ssh/authorized_keys" ]; then
+          touch "$HOME/.ssh/authorized_keys"
+          chmod 0600 "$HOME/.ssh/authorized_keys"
+          echo "File $HOME/.ssh/authorized_keys created."
+      fi
+      # Check if the public key is not already present in authorized_keys
+      if ! grep -q "${SSHPUB}" "$HOME/.ssh/authorized_keys"; then
+          # Append the public key to authorized_keys
+          echo "$SSHPUB" >> "$HOME/.ssh/authorized_keys"
+          echo "Public key from env variable added."
+      fi
+  fi
+
+  # turn off PAM to fix sshd login issue
+  sed -i 's/UsePAM yes/UsePAM no/' /etc/ssh/sshd_config
+
+  # set default port to 2222
+  sed -i 's/#Port 22/Port 2222/' /etc/ssh/sshd_config
+
+  echo "Exposing ENV variables"
+  env | sed 's/=/="/' | sed 's/$/"/' > /etc/environment
+  echo "set -a; source /etc/environment; set +a;" >> /root/.bashrc
+
+  mkdir /run/sshd
+  chmod 0755 /run/sshd
+
+  service ssh start
+  echo "sshd service started"
+}
+
+function InstallJupyter {
+    if pgrep jupyter-lab > /dev/null 2>&1; then
+      echo "jupyter already started"
+      return
+    fi
+
+    # Check if jupyter lab is already installed
+    if ! command -v jupyter-lab &> /dev/null; then
+        echo "jupyter lab is not installed. Installing..."
+
+        apt update
+        apt install python3 python3-pip -y
+        pip install -U virtualenv --break-system-packages
+        pip3 install jupyterlab --break-system-packages
+
+        echo "jupyter lab installation complete."
+    else
+        echo "jupyter lab is already installed."
+    fi
+
+    jupyter lab --generate-config
+
+    {
+     echo "c.ServerApp.ip = '0.0.0.0'"
+     echo "c.ServerApp.open_browser = False"
+     echo "c.ServerApp.port = 18889"
+    } >> ~/.jupyter/jupyter_lab_config.py
+
+    # Set root password if LEPTON_POD_ROOT_PASSWORD is provided
+    if [[ -n "$JUPKEY" ]]; then
+        echo "c.ServerApp.token = '${JUPKEY}'" >> ~/.jupyter/jupyter_lab_config.py
+        echo "Root password has been set."
+    fi
+
+    jupyter lab --allow-root > /var/log/jupyter.log 2>&1 &
+}
+
+if [[ -n $SSHKEY ||  -n $SSHPUB  ]]; then
+  InstallSSH
+fi
+
+if [[ -n $JUPKEY ]]; then
+  InstallJupyter
+fi
